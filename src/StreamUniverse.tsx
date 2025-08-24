@@ -3,12 +3,10 @@ import type { CSSProperties } from "react";
 
 /**
  * Stream Universe — TMDb-powered PWA (React)
- * iPhone-focused refresh:
- * - Remove 100vh from component (let outer wrapper handle safe-area + height)
- * - Lock body scroll when modal is open (iOS keyboard/bounce)
- * - Touch-friendly provider list (WebkitOverflowScrolling: 'touch')
- * - Search input tuned for iOS keyboard (inputMode, autocap off, etc.)
- * - Keep suggestion text visible and ellipsized
+ * iPhone-focused + new UX when NOT available at home:
+ * - BOTÕES invertidos: primeiro "Outras opções de acesso", depois "Ver em outros países".
+ * - "Outras opções" agora mostra APENAS alternativas do país de casa (homeCountry).
+ * - Mantém todos os fixes (scroll lock, safe-area, sugestão, etc.)
  */
 
 // ---- Theme ----
@@ -223,10 +221,6 @@ export default function StreamUniverse() {
     const availableAtHome = homeProviders.filter((p: any) => selectedProviders.has(p.provider_id));
 
     const elsewhere: any[] = [];
-    const altSubs = new Map<number, any>();
-    const altRent = new Map<number, any>();
-    const altBuy  = new Map<number, any>();
-
     for (const cc of allCountries) {
       const row = results[cc]; if (!row) continue;
       if (cc !== homeCountry) {
@@ -234,31 +228,21 @@ export default function StreamUniverse() {
         const matches = rowProviders.filter((p: any) => selectedProviders.has(p.provider_id));
         if (matches.length) elsewhere.push({ country: cc, link: row.link, matches });
       }
-      for (const b of subBuckets) {
-        const list: any[] = row?.[b] || [];
-        for (const p of list) {
-          if (selectedProviders.has(p.provider_id)) continue;
-          const slot = altSubs.get(p.provider_id) || { provider: p, count: 0, countries: new Set<string>(), sampleLink: row.link };
-          slot.count += 1; slot.countries.add(cc); if (!slot.sampleLink && row.link) slot.sampleLink = row.link; altSubs.set(p.provider_id, slot);
-        }
-      }
-      for (const p of (row?.rent || [])) {
-        if (selectedProviders.has(p.provider_id)) continue;
-        const slot = altRent.get(p.provider_id) || { provider: p, count: 0, countries: new Set<string>(), sampleLink: row.link };
-        slot.count += 1; slot.countries.add(cc); if (!slot.sampleLink && row.link) slot.sampleLink = row.link; altRent.set(p.provider_id, slot);
-      }
-      for (const p of (row?.buy || [])) {
-        if (selectedProviders.has(p.provider_id)) continue;
-        const slot = altBuy.get(p.provider_id) || { provider: p, count: 0, countries: new Set<string>(), sampleLink: row.link };
-        slot.count += 1; slot.countries.add(cc); if (!slot.sampleLink && row.link) slot.sampleLink = row.link; altBuy.set(p.provider_id, slot);
-      }
     }
-
     elsewhere.sort((a: any, b: any) => b.matches.length - a.matches.length);
-    const toList = (m: Map<number, any>) => Array.from(m.values()).map((v) => ({ provider: v.provider, count: v.count, countries: Array.from(v.countries), sampleLink: v.sampleLink }))
-      .sort((a, b) => b.count - a.count).slice(0, 12);
 
-    setAnalysis({ availableAtHome, homeData: home, elsewhere, allCountries, alternatives: { subs: toList(altSubs), rent: toList(altRent), buy: toList(altBuy) } });
+    // ---- Alternatives ONLY for home country ----
+    const homeAltSubs = (home ? buckets.flatMap((b: any) => (home?.[b] || [])) : []).filter((p: any) => !selectedProviders.has(p.provider_id));
+    const homeAltRent = (home?.rent || []).filter((p: any) => !selectedProviders.has(p.provider_id));
+    const homeAltBuy  = (home?.buy  || []).filter((p: any) => !selectedProviders.has(p.provider_id));
+
+    setAnalysis({
+      availableAtHome,
+      homeData: home,
+      elsewhere,
+      allCountries,
+      alternativesHome: { subs: homeAltSubs, rent: homeAltRent, buy: homeAltBuy },
+    });
   }
   useEffect(() => { if (selected && apiKey) { analyzeSelection(selected).catch(() => {}); } else { setAnalysis(null); } }, [selected, apiKey, homeCountry, selectedProviders]);
 
@@ -287,6 +271,11 @@ export default function StreamUniverse() {
       setRecent(next); localStorage.setItem("sc_recent", JSON.stringify(next));
     } catch {}
   }, [selected]);
+
+  // Reveal toggles for the new UX (hidden by default)
+  const [revealElsewhere, setRevealElsewhere] = useState(false);
+  const [revealAlternatives, setRevealAlternatives] = useState(false);
+  useEffect(() => { setRevealElsewhere(false); setRevealAlternatives(false); }, [selected, homeCountry]);
 
   // Settings modal: lock background scroll on iOS
   const [showSettings, setShowSettings] = useState(false);
@@ -495,110 +484,105 @@ export default function StreamUniverse() {
 
                 {analysis && (
                   <div style={styles.cardLg}>
-                    <h3 style={styles.h3}>Availability in {homeCountry} {flagEmoji(homeCountry)}</h3>
+                    <h3 style={styles.h3}>Disponibilidade em {homeCountry} {flagEmoji(homeCountry)}</h3>
                     {analysis.homeData ? (
                       analysis.availableAtHome.length ? (
                         <>
-                          <p style={styles.body}>Good news! It’s on your services:</p>
+                          <p style={styles.body}>Boa! Está nos seus serviços:</p>
                           <div style={{display:'flex',flexWrap:'wrap',gap:8,marginTop:8}}>
                             {analysis.availableAtHome.map((p: any)=> (<ProviderPill key={p.provider_id} p={p} />))}
                           </div>
                           {analysis.homeData?.link && (
-                            <p style={styles.meta}>Source page: <a href={analysis.homeData.link} target="_blank" rel="noreferrer" style={styles.link}>Open regional listing</a></p>
+                            <p style={styles.meta}>Página fonte: <a href={analysis.homeData.link} target="_blank" rel="noreferrer" style={styles.link}>Abrir listagem regional</a></p>
                           )}
                         </>
                       ) : (
                         <>
-                          <p style={styles.body}>Not available on your selected services.</p>
+                          <p style={styles.body}>Não disponível nos seus serviços em {homeCountry}.</p>
                           {analysis.homeData?.link && (
-                            <p style={styles.meta}>See all providers: <a href={analysis.homeData.link} target="_blank" rel="noreferrer" style={styles.link}>Regional listing</a></p>
+                            <p style={styles.meta}>Ver todos os provedores: <a href={analysis.homeData.link} target="_blank" rel="noreferrer" style={styles.link}>Listagem regional</a></p>
+                          )}
+                          <div style={{display:'flex', gap:8, flexWrap:'wrap', marginTop:8}}>
+                            {/* ORDEM INVERTIDA: primeiro Outras opções (primário), depois Outros países */}
+                            <button style={styles.primaryBtn} onClick={()=>setRevealAlternatives((v)=>!v)}>
+                              {revealAlternatives ? 'Ocultar outras opções' : 'Outras opções de acesso'}
+                            </button>
+                            <button style={styles.secondaryBtn} onClick={()=>setRevealElsewhere((v)=>!v)}>
+                              {revealElsewhere ? 'Ocultar outros países' : 'Ver em outros países'}
+                            </button>
+                          </div>
+
+                          {/* ALTERNATIVES (toggle) — APENAS país de casa */}
+                          {revealAlternatives && (
+                            <div style={{marginTop:12}}>
+                              <p style={styles.meta}>Opções em {homeCountry} {flagEmoji(homeCountry)}</p>
+                              {analysis.alternativesHome?.subs?.length ? (
+                                <div style={{marginTop:10}}>
+                                  <h4 style={{margin:'6px 0', fontWeight:700}}>Assinar outro serviço</h4>
+                                  <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+                                    {analysis.alternativesHome.subs.map((p: any) => (
+                                      <ProviderPill key={`home-sub-${p.provider_id}`} p={p} />
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              {(analysis.alternativesHome?.rent?.length || analysis.alternativesHome?.buy?.length) ? (
+                                <div style={{marginTop:12}}>
+                                  <h4 style={{margin:'6px 0', fontWeight:700}}>Aluguel ou compra</h4>
+                                  {analysis.alternativesHome.rent?.length ? (
+                                    <div style={{marginTop:6}}>
+                                      <div style={styles.meta}>Alugar em:</div>
+                                      <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+                                        {analysis.alternativesHome.rent.map((p: any) => (
+                                          <ProviderPill key={`home-rent-${p.provider_id}`} p={p} />
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : null}
+                                  {analysis.alternativesHome.buy?.length ? (
+                                    <div style={{marginTop:10}}>
+                                      <div style={styles.meta}>Comprar em:</div>
+                                      <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+                                        {analysis.alternativesHome.buy.map((p: any) => (
+                                          <ProviderPill key={`home-buy-${p.provider_id}`} p={p} />
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : null}
+                                  <p style={{...styles.meta, marginTop:10}}>TMDb não traz preços nessa rota. Abra a listagem regional para ver valores atuais.</p>
+                                </div>
+                              ) : null}
+                            </div>
+                          )}
+
+                          {/* ELSEWHERE (toggle) */}
+                          {revealElsewhere && (
+                            analysis.elsewhere.length ? (
+                              <div style={{marginTop:12, display:'grid',gridTemplateColumns:'1fr',gap:12}}>
+                                {analysis.elsewhere.map((row: any)=> (
+                                  <div key={row.country} style={styles.countryRow}>
+                                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:6}}>
+                                      <div style={{display:'flex',alignItems:'center',gap:8}}>
+                                        <span style={{fontSize:20}}>{flagEmoji(row.country)}</span>
+                                        <strong>{row.country}</strong>
+                                      </div>
+                                      {row.link && <a href={row.link} target="_blank" rel="noreferrer" style={styles.link}>Abrir listagem</a>}
+                                    </div>
+                                    <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
+                                      {row.matches.map((p: any)=> (<ProviderPill key={`${row.country}:${p.provider_id}`} p={p} />))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p style={{...styles.meta, marginTop:8}}>Nenhum dos seus serviços tem esse título em outros países.</p>
+                            )
                           )}
                         </>
                       )
                     ) : (
-                      <p style={styles.body}>No data for this region.</p>
-                    )}
-                  </div>
-                )}
-
-                {/* Elsewhere only when not at home */}
-                {analysis && analysis.availableAtHome.length === 0 && (
-                  <div style={styles.cardLg}>
-                    <h3 style={styles.h3}>Where your services DO have it</h3>
-                    {analysis.elsewhere.length ? (
-                      <div style={{display:'grid',gridTemplateColumns:'1fr',gap:12}}>
-                        {analysis.elsewhere.map((row: any)=> (
-                          <div key={row.country} style={styles.countryRow}>
-                            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:6}}>
-                              <div style={{display:'flex',alignItems:'center',gap:8}}>
-                                <span style={{fontSize:20}}>{flagEmoji(row.country)}</span>
-                                <strong>{row.country}</strong>
-                              </div>
-                              {row.link && <a href={row.link} target="_blank" rel="noreferrer" style={styles.link}>Open listing</a>}
-                            </div>
-                            <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
-                              {row.matches.map((p: any)=> (<ProviderPill key={`${row.country}:${p.provider_id}`} p={p} />))}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div>
-                        <p style={styles.body}>None of your selected services have this title in other countries.</p>
-                        {analysis.alternatives && (
-                          <div style={{marginTop:10}}>
-                            {analysis.alternatives.subs?.length ? (
-                              <div style={{marginTop:10}}>
-                                <h4 style={{margin:'6px 0', fontWeight:700}}>Try another subscription service</h4>
-                                <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
-                                  {analysis.alternatives.subs.map((x: any) => (
-                                    <div key={`sub-${x.provider.provider_id}`} style={{display:'flex',alignItems:'center',gap:8,minWidth:0}}>
-                                      <ProviderPill p={x.provider} />
-                                      <span style={styles.meta}>in {x.countries.length} regions</span>
-                                      {x.sampleLink && <a href={x.sampleLink} target="_blank" rel="noreferrer" style={{...styles.link, marginLeft:6}}>Open listing</a>}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-
-                            {(analysis.alternatives.rent?.length || analysis.alternatives.buy?.length) ? (
-                              <div style={{marginTop:12}}>
-                                <h4 style={{margin:'6px 0', fontWeight:700}}>Rent or buy</h4>
-                                {analysis.alternatives.rent?.length ? (
-                                  <div style={{marginTop:6}}>
-                                    <div style={styles.meta}>Rent from:</div>
-                                    <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
-                                      {analysis.alternatives.rent.map((x: any) => (
-                                        <div key={`rent-${x.provider.provider_id}`} style={{display:'flex',alignItems:'center',gap:8,minWidth:0}}>
-                                          <ProviderPill p={x.provider} />
-                                          <span style={styles.meta}>in {x.countries.length} regions</span>
-                                          {x.sampleLink && <a href={x.sampleLink} target="_blank" rel="noreferrer" style={{...styles.link, marginLeft:6}}>Open listing</a>}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                ) : null}
-                                {analysis.alternatives.buy?.length ? (
-                                  <div style={{marginTop:10}}>
-                                    <div style={styles.meta}>Buy on:</div>
-                                    <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
-                                      {analysis.alternatives.buy.map((x: any) => (
-                                        <div key={`buy-${x.provider.provider_id}`} style={{display:'flex',alignItems:'center',gap:8,minWidth:0}}>
-                                          <ProviderPill p={x.provider} />
-                                          <span style={styles.meta}>in {x.countries.length} regions</span>
-                                          {x.sampleLink && <a href={x.sampleLink} target="_blank" rel="noreferrer" style={{...styles.link, marginLeft:6}}>Open listing</a>}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                ) : null}
-                                <p style={{...styles.meta, marginTop:10}}>Prices aren’t included in TMDb’s watch-provider feed. Open a regional listing to see current pricing.</p>
-                              </div>
-                            ) : null}
-                          </div>
-                        )}
-                      </div>
+                      <p style={styles.body}>Sem dados para esta região.</p>
                     )}
                   </div>
                 )}
@@ -626,7 +610,7 @@ const ProviderPill: React.FC<{ p: any }> = ({ p }) => (
 
 // ---- Inline styles ----
 const styles: Record<string, CSSProperties> = {
-  app: { /* height handled by outer wrapper for iOS safe-area */ color: THEME.text },
+  app: { color: THEME.text },
   container: { maxWidth: 980, margin: '0 auto', padding: '24px 16px' },
   header: { display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, marginBottom: 12, flexWrap:'wrap' },
   logoCircle: { width: 36, height: 36, borderRadius: 12, color:'#fff', display:'grid', placeItems:'center', fontSize:18, boxShadow:'0 4px 16px rgba(149,38,222,0.35)' },
