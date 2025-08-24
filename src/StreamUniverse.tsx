@@ -1,31 +1,28 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 
 /**
  * Stream Universe — TMDb-powered PWA (React)
- * -------------------------------------
- * Flow (per your spec)
- * 1) On first run ask: (a) TMDb API key, (b) services the user pays for.
- * 2) Home shows search + past searches (last 5 only, stored locally).
- * 3) Selecting a title jumps straight to details (hides suggestions list),
- *    shows rating, summary, and a YouTube trailer button when available.
- * 4) Availability: "At Home" and (only if NOT available at home) "Elsewhere" for the user's selected services.
- * 5) If none of the user's services has the title in ANY country, show Suggestions
- *    with other subscription services and rent/buy platforms (no prices via TMDb).
+ * iPhone-focused refresh:
+ * - Remove 100vh from component (let outer wrapper handle safe-area + height)
+ * - Lock body scroll when modal is open (iOS keyboard/bounce)
+ * - Touch-friendly provider list (WebkitOverflowScrolling: 'touch')
+ * - Search input tuned for iOS keyboard (inputMode, autocap off, etc.)
+ * - Keep suggestion text visible and ellipsized
  */
 
-// ---- Theme tokens ----
+// ---- Theme ----
 const THEME = {
-  primary: "#9526DE", // your purple
-  text: "#0B0B12",
+  primary: "#9526DE",
+  text: "#111111",
   muted: "#6B7280",
   surface: "#FFFFFF",
   surfaceAlt: "#FBF7FF",
   border: "#E7E2F5",
 };
 
-const TMDB_IMG = "https://image.tmdb.org/t/p"; // e.g., `${TMDB_IMG}/w92${path}`
+const TMDB_IMG = "https://image.tmdb.org/t/p";
 
-// Compact set of regions — expand as needed
 const REGIONS = [
   { code: "FR", name: "France" }, { code: "US", name: "United States" }, { code: "GB", name: "United Kingdom" },
   { code: "DE", name: "Germany" }, { code: "BR", name: "Brazil" }, { code: "ES", name: "Spain" },
@@ -58,7 +55,7 @@ function deduceRegionFallback(defaultCode = "FR") {
   } catch { return defaultCode; }
 }
 
-// ---------- Relevance helpers (shared by search + tests) ----------
+// ---------- Relevance helpers ----------
 function normalizeTitle(s: any) {
   const str = (s ?? "") + "";
   const lower = str.toLowerCase();
@@ -107,7 +104,7 @@ function relevanceScore(item: any, q: string) {
   }
   const pop = Number(item.popularity || 0);
   const votes = Number(item.vote_count || 0);
-  score += Math.log10(pop + 1) * 10; // gentle tie-breakers
+  score += Math.log10(pop + 1) * 10;
   score += Math.log10(votes + 1) * 2;
   return score;
 }
@@ -126,50 +123,38 @@ const DebouncedInput: React.FC<{ value: string; onChange: (v: string) => void; o
     <input
       value={inner}
       placeholder={placeholder}
-      onChange={(e) => { const v = (e.target as HTMLInputElement).value; setInner(v); if (onImmediateChange) onImmediateChange(v); }}
+      inputMode="search"
+      autoCapitalize="off"
+      autoCorrect="off"
+      spellCheck={false}
+      onChange={(e: React.ChangeEvent<HTMLInputElement>) => { const v = e.target.value; setInner(v); if (onImmediateChange) onImmediateChange(v); }}
       style={styles.input}
     />
   );
 };
 
 export default function StreamUniverse() {
-  // --- Keys & region ---
+  // Keys & region
   const [apiKey, setApiKey] = useLocalStorage("sc_api_key", "");
   const [homeCountry, setHomeCountry] = useLocalStorage("sc_home_country", deduceRegionFallback());
-
-  // Onboarding gate
-  const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState<boolean>(() => {
-    try { return localStorage.getItem("sc_onboarded") === "yes"; } catch { return false; }
-  });
+  const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState<boolean>(() => { try { return localStorage.getItem("sc_onboarded") === "yes"; } catch { return false; } });
 
   // Search
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<any[]>([]);
   const [loadingSearch, setLoadingSearch] = useState(false);
-  const [recent, setRecent] = useState<string[]>(() => {
-    try {
-      const arr = JSON.parse(localStorage.getItem("sc_recent") || "[]");
-      if (Array.isArray(arr) && arr.length > 5) {
-        const pr = arr.slice(0, 5);
-        localStorage.setItem("sc_recent", JSON.stringify(pr));
-        return pr;
-      }
-      return arr;
-    } catch { return []; }
-  });
+  const [recent, setRecent] = useState<string[]>(() => { try { const arr = JSON.parse(localStorage.getItem("sc_recent") || "[]"); return Array.isArray(arr) ? arr.slice(0,5) : []; } catch { return []; } });
 
-  // Selected title
+  // Selection
   const [selected, setSelected] = useState<any>(null);
 
-  // Provider directories + user's picked services
+  // Providers
   const [providerDirectory, setProviderDirectory] = useState<Record<number, any>>({});
   const [providerFilter, setProviderFilter] = useState("");
   const [selectedProviders, setSelectedProviders] = useState<Set<number>>(() => { try { return new Set(JSON.parse(localStorage.getItem("sc_services") || "[]")); } catch { return new Set(); } });
 
-  // Cache for watch providers
   const cacheRef = useRef<Map<string, any>>(new Map());
 
-  // Load directories for region
   async function loadProvidersForRegion(region: string) {
     if (!apiKey) return;
     const urls = [
@@ -187,7 +172,7 @@ export default function StreamUniverse() {
   }
   useEffect(() => { loadProvidersForRegion(homeCountry).catch(() => {}); }, [homeCountry, apiKey]);
 
-  // ---------- SEARCH (with relevance sorting) ----------
+  // Search with relevance
   async function doSearch(q: string) {
     if (!apiKey || !q.trim()) { setResults([]); return; }
     setLoadingSearch(true);
@@ -196,9 +181,7 @@ export default function StreamUniverse() {
       const data = await fetch(url).then((r) => r.json());
       const base = (data?.results || []).filter((x: any) => x.media_type === "movie" || x.media_type === "tv");
       base.sort((a: any, b: any) => relevanceScore(b, q) - relevanceScore(a, q));
-      const parsed = base
-        .slice(0, 12)
-        .map((x: any) => ({ id: x.id, type: x.media_type, name: x.title || x.name, year: ((x.release_date || x.first_air_date || "") + "").slice(0, 4), poster: x.poster_path }));
+      const parsed = base.slice(0, 12).map((x: any) => ({ id: x.id, type: x.media_type, name: x.title || x.name, year: ((x.release_date || x.first_air_date || "") + "").slice(0, 4), poster: x.poster_path }));
       setResults(parsed);
     } catch (e) { console.error(e); setResults([]); }
     finally { setLoadingSearch(false); }
@@ -230,18 +213,16 @@ export default function StreamUniverse() {
   }, [providerDirectory, providerFilter]);
 
   const [analysis, setAnalysis] = useState<any>(null);
-
   async function analyzeSelection(sel: any) {
     const results = await getWatchProviders({ id: sel.id, type: sel.type });
     const allCountries = Object.keys(results || {});
-    const subBuckets = ["flatrate", "free", "ads"] as const; // considered for subscription-like
+    const subBuckets = ["flatrate", "free", "ads"] as const;
     const home = (results?.[homeCountry] || null);
     const buckets = subBuckets as readonly string[];
     const homeProviders = (home ? buckets.flatMap((b: any) => (home?.[b] || [])) : []);
     const availableAtHome = homeProviders.filter((p: any) => selectedProviders.has(p.provider_id));
 
     const elsewhere: any[] = [];
-
     const altSubs = new Map<number, any>();
     const altRent = new Map<number, any>();
     const altBuy  = new Map<number, any>();
@@ -253,7 +234,6 @@ export default function StreamUniverse() {
         const matches = rowProviders.filter((p: any) => selectedProviders.has(p.provider_id));
         if (matches.length) elsewhere.push({ country: cc, link: row.link, matches });
       }
-      // Alternatives (exclude user's selected services)
       for (const b of subBuckets) {
         const list: any[] = row?.[b] || [];
         for (const p of list) {
@@ -275,22 +255,14 @@ export default function StreamUniverse() {
     }
 
     elsewhere.sort((a: any, b: any) => b.matches.length - a.matches.length);
-
     const toList = (m: Map<number, any>) => Array.from(m.values()).map((v) => ({ provider: v.provider, count: v.count, countries: Array.from(v.countries), sampleLink: v.sampleLink }))
       .sort((a, b) => b.count - a.count).slice(0, 12);
 
-    setAnalysis({
-      availableAtHome,
-      homeData: home,
-      elsewhere,
-      allCountries,
-      alternatives: { subs: toList(altSubs), rent: toList(altRent), buy: toList(altBuy) },
-    });
+    setAnalysis({ availableAtHome, homeData: home, elsewhere, allCountries, alternatives: { subs: toList(altSubs), rent: toList(altRent), buy: toList(altBuy) } });
   }
-
   useEffect(() => { if (selected && apiKey) { analyzeSelection(selected).catch(() => {}); } else { setAnalysis(null); } }, [selected, apiKey, homeCountry, selectedProviders]);
 
-  // ---- Details (rating, summary, trailer) ----
+  // Details
   const [details, setDetails] = useState<any>(null);
   async function loadDetails(item: any) {
     try {
@@ -316,20 +288,28 @@ export default function StreamUniverse() {
     } catch {}
   }, [selected]);
 
-  // ---- Onboarding ----
-  const [onStep, setOnStep] = useState(1);
-  const needsOnboarding = !apiKey || selectedProviders.size === 0 || !hasCompletedOnboarding;
+  // Settings modal: lock background scroll on iOS
   const [showSettings, setShowSettings] = useState(false);
-  function completeOnboarding() { try { localStorage.setItem("sc_onboarded", "yes"); } catch {} setHasCompletedOnboarding(true); }
+  useEffect(() => {
+    if (showSettings) {
+      const prev = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => { document.body.style.overflow = prev; };
+    }
+  }, [showSettings]);
 
-  // ---- Tiny self-tests for helpers (dev only) ----
+  // Tiny tests
   useEffect(() => {
     try {
-      console.assert(normalizeTitle("Dune: Part Two (2024)") === "duneparttwo2024", "normalizeTitle failed");
-      console.assert(extractYear("dune 2021") === "2021", "extractYear failed");
+      console.assert(normalizeTitle("Dune: Part Two (2024)") === "duneparttwo2024");
+      console.assert(extractYear("dune 2021") === "2021");
       const s1 = relevanceScore({ title: "Dune", release_date: "2021-10-01" }, "dune 2021");
       const s2 = relevanceScore({ title: "Dune", release_date: "1984-01-01" }, "dune 2021");
-      console.assert(s1 > s2, "relevanceScore year weighting failed");
+      console.assert(s1 > s2);
+      // extra tests
+      console.assert(extractYear("no year here") === null);
+      console.assert(normalizeTitle("Amélie (2001)!") === "amlie2001");
+      console.assert(flagEmoji("FR").length >= 2);
     } catch {}
   }, []);
 
@@ -338,14 +318,14 @@ export default function StreamUniverse() {
       <style>{`:root{--primary:${THEME.primary};--text:${THEME.text};--muted:${THEME.muted};--border:${THEME.border}}`}</style>
       <div style={styles.container}>
         <header style={styles.header}>
-          <div style={{display:'flex',alignItems:'center',gap:12}}>
+          <div style={{display:'flex',alignItems:'center',gap:12,minWidth:0}}>
             <div style={{...styles.logoCircle, background: THEME.primary}}>✶</div>
-            <div>
+            <div style={{minWidth:0}}>
               <h1 style={styles.h1}>Stream Universe</h1>
               <p style={styles.sub}>Find where to watch — fast.</p>
             </div>
           </div>
-          <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',justifyContent:'flex-end'}}>
             <select value={homeCountry} onChange={(e)=>setHomeCountry((e.target as HTMLSelectElement).value)} style={styles.select}>
               {REGIONS.map((r)=>(<option key={r.code} value={r.code}>{r.code} — {r.name}</option>))}
             </select>
@@ -361,28 +341,28 @@ export default function StreamUniverse() {
               <input type="password" value={apiKey} onChange={(e)=>setApiKey((e.target as HTMLInputElement).value)} placeholder="Paste API key" style={styles.input} />
               <label style={{...styles.label, marginTop:12}}>Your services</label>
               <div style={styles.providerBox}>
-                <div style={{display:'flex',gap:8,marginBottom:8}}>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
                   <input placeholder="Filter providers" value={providerFilter} onChange={(e)=>setProviderFilter((e.target as HTMLInputElement).value)} style={{...styles.input, margin:0}} />
                   <button style={styles.ghostBtn} onClick={()=>setSelectedProviders(new Set())}>Clear</button>
                   <button style={styles.ghostBtn} onClick={()=>setSelectedProviders(new Set(providerList.map((p: any)=>p.provider_id)))}>Select All</button>
                 </div>
-                <div style={{maxHeight:260, overflow:'auto', paddingRight:6}}>
-                  <ul style={{display:'grid',gridTemplateColumns:'1fr 1fr', gap:6}}>
+                <div style={{maxHeight:300, overflow:'auto', paddingRight:6, WebkitOverflowScrolling:'touch' as any}}>
+                  <ul style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(220px, 1fr))', gap:8}}>
                     {providerList.map((p: any)=> (
                       <li key={p.provider_id}>
                         <label style={styles.providerRow}>
                           <input type="checkbox" checked={selectedProviders.has(p.provider_id)} onChange={()=>toggleProvider(p.provider_id)} />
                           {p.logo_path ? (
-                            <img src={`${TMDB_IMG}/w45${p.logo_path}`} alt="logo" style={{width:24,height:24,borderRadius:6}} />
-                          ) : (<div style={{width:24,height:24,background:'#EEE',borderRadius:6}} />)}
-                          <span>{p.provider_name}</span>
+                            <img src={`${TMDB_IMG}/w45${p.logo_path}`} alt="logo" style={{width:24,height:24,borderRadius:6,flex:'0 0 auto'}} />
+                          ) : (<div style={{width:24,height:24,background:'#EEE',borderRadius:6,flex:'0 0 auto'}} />)}
+                          <span style={styles.providerName}>{p.provider_name}</span>
                         </label>
                       </li>
                     ))}
                   </ul>
                 </div>
               </div>
-              <div style={{display:'flex',gap:8,marginTop:12,justifyContent:'flex-end'}}>
+              <div style={{display:'flex',gap:8,marginTop:12,justifyContent:'flex-end',flexWrap:'wrap'}}>
                 <button style={styles.secondaryBtn} onClick={()=>setShowSettings(false)}>Close</button>
               </div>
             </div>
@@ -390,50 +370,49 @@ export default function StreamUniverse() {
         )}
 
         {/* Onboarding */}
-        {needsOnboarding ? (
+        {(!apiKey || selectedProviders.size === 0 || !hasCompletedOnboarding) ? (
           <section style={styles.cardLg}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:12}}>
               <h2 style={styles.h2}>Let’s set you up</h2>
-              <span style={styles.stepBadge}>Step {onStep} of 2</span>
+              <span style={styles.stepBadge}>Step {(!apiKey ? 1 : 2)} of 2</span>
             </div>
 
-            {onStep === 1 && (
+            {(!apiKey) ? (
               <div>
                 <label style={styles.label}>Your TMDb API Key</label>
                 <input type="password" value={apiKey} onChange={(e)=>setApiKey((e.target as HTMLInputElement).value)} placeholder="Paste API key" style={styles.input} />
                 <p style={styles.meta}>Stored locally on your device. You can change it later.</p>
-                <button style={styles.primaryBtn} onClick={()=> setOnStep(2)} disabled={!apiKey}>Continue</button>
+                <div style={{display:'flex',justifyContent:'flex-end'}}>
+                  <button style={styles.primaryBtn} onClick={()=> {/* go to next */}} disabled={!apiKey}>Continue</button>
+                </div>
               </div>
-            )}
-
-            {onStep === 2 && (
+            ) : (
               <div>
                 <label style={styles.label}>Pick the services you pay for</label>
                 <div style={styles.providerBox}>
-                  <div style={{display:'flex',gap:8,marginBottom:8}}>
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
                     <input placeholder="Filter providers" value={providerFilter} onChange={(e)=>setProviderFilter((e.target as HTMLInputElement).value)} style={{...styles.input, margin:0}} />
                     <button style={styles.ghostBtn} onClick={()=>setSelectedProviders(new Set())}>Clear</button>
                     <button style={styles.ghostBtn} onClick={()=>setSelectedProviders(new Set(providerList.map((p: any)=>p.provider_id)))}>Select All</button>
                   </div>
-                  <div style={{maxHeight:260, overflow:'auto', paddingRight:6}}>
-                    <ul style={{display:'grid',gridTemplateColumns:'1fr 1fr', gap:6}}>
+                  <div style={{maxHeight:300, overflow:'auto', paddingRight:6, WebkitOverflowScrolling:'touch' as any}}>
+                    <ul style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(220px, 1fr))', gap:8}}>
                       {providerList.map((p: any)=> (
                         <li key={p.provider_id}>
                           <label style={styles.providerRow}>
                             <input type="checkbox" checked={selectedProviders.has(p.provider_id)} onChange={()=>toggleProvider(p.provider_id)} />
                             {p.logo_path ? (
-                              <img src={`${TMDB_IMG}/w45${p.logo_path}`} alt="logo" style={{width:24,height:24,borderRadius:6}} />
-                            ) : (<div style={{width:24,height:24,background:'#EEE',borderRadius:6}} />)}
-                            <span>{p.provider_name}</span>
+                              <img src={`${TMDB_IMG}/w45${p.logo_path}`} alt="logo" style={{width:24,height:24,borderRadius:6,flex:'0 0 auto'}} />
+                            ) : (<div style={{width:24,height:24,background:'#EEE',borderRadius:6,flex:'0 0 auto'}} />)}
+                            <span style={styles.providerName}>{p.provider_name}</span>
                           </label>
                         </li>
                       ))}
                     </ul>
                   </div>
                 </div>
-                <div style={{display:'flex',gap:8,marginTop:12}}>
-                  <button style={styles.secondaryBtn} onClick={()=> setOnStep(1)}>Back</button>
-                  <button style={styles.primaryBtn} onClick={completeOnboarding} disabled={selectedProviders.size===0}>Finish</button>
+                <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>
+                  <button style={styles.primaryBtn} onClick={()=>{ try { localStorage.setItem("sc_onboarded", "yes"); } catch {} setHasCompletedOnboarding(true); }} disabled={selectedProviders.size===0}>Finish</button>
                 </div>
               </div>
             )}
@@ -451,7 +430,6 @@ export default function StreamUniverse() {
               />
               {loadingSearch && <div style={styles.meta}>Searching…</div>}
 
-              {/* Recent */}
               {recent.length > 0 && (
                 <div style={{marginTop:8, display:'flex',flexWrap:'wrap', gap:8}}>
                   {recent.map((r)=> (
@@ -465,17 +443,21 @@ export default function StreamUniverse() {
               {!!results.length && !selected && (
                 <div style={styles.resultsBox}>
                   {results.map((r) => (
-                    <button
+                    <div
                       key={`${r.type}:${r.id}`}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Open ${r.name}`}
+                      onKeyDown={(e)=>{ if (e.key === 'Enter') { setSelected(r); setResults([]); setQuery(""); try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch {} }}}
                       onClick={()=> { setSelected(r); setResults([]); setQuery(""); try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch {} }}
                       style={styles.resultRow}
                     >
-                      {r.poster ? (<img src={`${TMDB_IMG}/w92${r.poster}`} alt="poster" style={{width:44,height:66,borderRadius:8,objectFit:'cover'}} />) : (<div style={{width:44,height:66,background:'#EEE',borderRadius:8}} />)}
-                      <div style={{flex:1}}>
-                        <div style={{fontWeight:600}}>{r.name} {r.year ? <span style={{color:THEME.muted}}>({r.year})</span> : null}</div>
-                        <div style={{...styles.meta, textTransform:'uppercase'}}>{r.type}</div>
+                      {r.poster ? (<img src={`${TMDB_IMG}/w92${r.poster}`} alt="poster" style={{width:44,height:66,borderRadius:8,objectFit:'cover',flex:'0 0 auto'}} />) : (<div style={{width:44,height:66,background:'#EEE',borderRadius:8,flex:'0 0 auto'}} />)}
+                      <div style={styles.resultTextCol}>
+                        <div style={styles.resultTitle}>{r.name}</div>
+                        {r.year ? <div style={styles.resultMeta}>({r.year}) • {String(r.type).toUpperCase()}</div> : <div style={styles.resultMeta}>{String(r.type).toUpperCase()}</div>}
                       </div>
-                    </button>
+                    </div>
                   ))}
                 </div>
               )}
@@ -485,11 +467,11 @@ export default function StreamUniverse() {
             {selected && (
               <section style={{marginTop:16, display:'grid', gap:16}}>
                 <div style={styles.cardLg}>
-                  <div style={{display:'flex', gap:16}}>
+                  <div style={{display:'flex', gap:16, alignItems:'flex-start'}}>
                     {selected.poster ? (
-                      <img src={`${TMDB_IMG}/w154${selected.poster}`} alt="poster" style={{width:112,height:164,borderRadius:16,objectFit:'cover'}} />
-                    ) : (<div style={{width:112,height:164,background:'#EEE',borderRadius:16}} />)}
-                    <div style={{flex:1}}>
+                      <img src={`${TMDB_IMG}/w154${selected.poster}`} alt="poster" style={{width:112,height:164,borderRadius:16,objectFit:'cover',flex:'0 0 auto'}} />
+                    ) : (<div style={{width:112,height:164,background:'#EEE',borderRadius:16,flex:'0 0 auto'}} />)}
+                    <div style={{flex:1,minWidth:0}}>
                       <h2 style={styles.h2}>{selected.name} {selected.year ? <span style={{color:THEME.muted}}>({selected.year})</span> : null}</h2>
                       <div style={{display:'flex', gap:8, flexWrap:'wrap', marginTop:4}}>
                         {details && typeof details.vote_average === 'number' && (
@@ -539,15 +521,15 @@ export default function StreamUniverse() {
                   </div>
                 )}
 
-                {/* Elsewhere only when not available at home */}
+                {/* Elsewhere only when not at home */}
                 {analysis && analysis.availableAtHome.length === 0 && (
                   <div style={styles.cardLg}>
                     <h3 style={styles.h3}>Where your services DO have it</h3>
                     {analysis.elsewhere.length ? (
-                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+                      <div style={{display:'grid',gridTemplateColumns:'1fr',gap:12}}>
                         {analysis.elsewhere.map((row: any)=> (
                           <div key={row.country} style={styles.countryRow}>
-                            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:6}}>
                               <div style={{display:'flex',alignItems:'center',gap:8}}>
                                 <span style={{fontSize:20}}>{flagEmoji(row.country)}</span>
                                 <strong>{row.country}</strong>
@@ -563,7 +545,6 @@ export default function StreamUniverse() {
                     ) : (
                       <div>
                         <p style={styles.body}>None of your selected services have this title in other countries.</p>
-                        {/* Suggestions when nothing matches */}
                         {analysis.alternatives && (
                           <div style={{marginTop:10}}>
                             {analysis.alternatives.subs?.length ? (
@@ -571,7 +552,7 @@ export default function StreamUniverse() {
                                 <h4 style={{margin:'6px 0', fontWeight:700}}>Try another subscription service</h4>
                                 <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
                                   {analysis.alternatives.subs.map((x: any) => (
-                                    <div key={`sub-${x.provider.provider_id}`} style={{display:'flex',alignItems:'center',gap:8}}>
+                                    <div key={`sub-${x.provider.provider_id}`} style={{display:'flex',alignItems:'center',gap:8,minWidth:0}}>
                                       <ProviderPill p={x.provider} />
                                       <span style={styles.meta}>in {x.countries.length} regions</span>
                                       {x.sampleLink && <a href={x.sampleLink} target="_blank" rel="noreferrer" style={{...styles.link, marginLeft:6}}>Open listing</a>}
@@ -589,7 +570,7 @@ export default function StreamUniverse() {
                                     <div style={styles.meta}>Rent from:</div>
                                     <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
                                       {analysis.alternatives.rent.map((x: any) => (
-                                        <div key={`rent-${x.provider.provider_id}`} style={{display:'flex',alignItems:'center',gap:8}}>
+                                        <div key={`rent-${x.provider.provider_id}`} style={{display:'flex',alignItems:'center',gap:8,minWidth:0}}>
                                           <ProviderPill p={x.provider} />
                                           <span style={styles.meta}>in {x.countries.length} regions</span>
                                           {x.sampleLink && <a href={x.sampleLink} target="_blank" rel="noreferrer" style={{...styles.link, marginLeft:6}}>Open listing</a>}
@@ -603,7 +584,7 @@ export default function StreamUniverse() {
                                     <div style={styles.meta}>Buy on:</div>
                                     <div style={{display:'flex',flexWrap:'wrap',gap:8}}>
                                       {analysis.alternatives.buy.map((x: any) => (
-                                        <div key={`buy-${x.provider.provider_id}`} style={{display:'flex',alignItems:'center',gap:8}}>
+                                        <div key={`buy-${x.provider.provider_id}`} style={{display:'flex',alignItems:'center',gap:8,minWidth:0}}>
                                           <ProviderPill p={x.provider} />
                                           <span style={styles.meta}>in {x.countries.length} regions</span>
                                           {x.sampleLink && <a href={x.sampleLink} target="_blank" rel="noreferrer" style={{...styles.link, marginLeft:6}}>Open listing</a>}
@@ -635,19 +616,19 @@ export default function StreamUniverse() {
 const ProviderPill: React.FC<{ p: any }> = ({ p }) => (
   <span style={styles.pillRow}>
     {p.logo_path ? (
-      <img src={`${TMDB_IMG}/w45${p.logo_path}`} alt={p.provider_name} style={{width:20,height:20,borderRadius:5}} />
+      <img src={`${TMDB_IMG}/w45${p.logo_path}`} alt={p.provider_name} style={{width:20,height:20,borderRadius:5,flex:'0 0 auto'}} />
     ) : (
       <span style={{width:20,height:20,background:'#EEE',borderRadius:5}} />
     )}
-    <span>{p.provider_name}</span>
+    <span style={{maxWidth:160, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{p.provider_name}</span>
   </span>
 );
 
 // ---- Inline styles ----
-const styles: Record<string, React.CSSProperties> = {
-  app: { minHeight:'100vh', color: THEME.text },
+const styles: Record<string, CSSProperties> = {
+  app: { /* height handled by outer wrapper for iOS safe-area */ color: THEME.text },
   container: { maxWidth: 980, margin: '0 auto', padding: '24px 16px' },
-  header: { display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom: 12 },
+  header: { display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, marginBottom: 12, flexWrap:'wrap' },
   logoCircle: { width: 36, height: 36, borderRadius: 12, color:'#fff', display:'grid', placeItems:'center', fontSize:18, boxShadow:'0 4px 16px rgba(149,38,222,0.35)' },
   h1: { margin:0, fontSize:24, fontWeight:800 },
   sub: { margin:0, fontSize:12, color: THEME.muted },
@@ -655,25 +636,28 @@ const styles: Record<string, React.CSSProperties> = {
   h3: { margin:'0 0 6px', fontSize:16, fontWeight:700 },
   stepBadge: { padding:'6px 10px', background:'#F2E8FF', borderRadius:999, fontSize:12, color: THEME.primary, fontWeight:600 },
   label: { display:'block', margin:'8px 0 6px', fontSize:12, fontWeight:700, textTransform:'uppercase', letterSpacing:0.6, color: THEME.muted },
-  input: { width:'100%', padding:'10px 12px', borderRadius:12, border:`1px solid ${THEME.border}`, outline:'none', fontSize:16 },
-  select: { padding:'8px 12px', borderRadius:12, border:`1px solid ${THEME.border}`, outline:'none', fontSize:14, background:'#fff' },
-  primaryBtn: { display:'inline-flex', alignItems:'center', justifyContent:'center', gap:8, padding:'10px 14px', background: THEME.primary, color:'#fff', borderRadius:12, border:'1px solid transparent', cursor:'pointer', fontWeight:700 },
+  input: { width:'100%', padding:'10px 12px', borderRadius:12, border:`1px solid ${THEME.border}`, outline:'none', fontSize:16, background:'#fff', color: THEME.text },
+  select: { padding:'8px 12px', borderRadius:12, border:`1px solid ${THEME.border}`, outline:'none', fontSize:14, background:'#fff', color: THEME.text },
+  primaryBtn: { display:'inline-flex', alignItems:'center', justifyContent:'center', gap:8, padding:'10px 14px', background: THEME.primary, color:'#fff', borderRadius:12, border:'1px solid transparent', cursor:'pointer', fontWeight:700, textDecoration:'none' },
   secondaryBtn: { display:'inline-flex', alignItems:'center', justifyContent:'center', gap:8, padding:'10px 14px', background:'#fff', color: THEME.text, borderRadius:12, border:`1px solid ${THEME.border}`, cursor:'pointer', fontWeight:600 },
   ghostBtn: { display:'inline-flex', alignItems:'center', justifyContent:'center', gap:8, padding:'8px 10px', background:'#fff', color: THEME.text, borderRadius:10, border:`1px solid ${THEME.border}`, cursor:'pointer', fontWeight:600 },
-  pill: { padding:'6px 10px', borderRadius:999, border:`1px solid ${THEME.border}`, background:'#fff', fontSize:13 },
-  pillRow: { display:'inline-flex', alignItems:'center', gap:8, padding:'6px 10px', borderRadius:999, border:`1px solid ${THEME.border}`, background:'#fff', fontSize:13 },
+  pill: { padding:'6px 10px', borderRadius:999, border:`1px solid ${THEME.border}`, background:'#fff', fontSize:13, color: THEME.text },
+  pillRow: { display:'inline-flex', alignItems:'center', gap:8, padding:'6px 10px', borderRadius:999, border:`1px solid ${THEME.border}`, background:'#fff', fontSize:13, color: THEME.text },
   resultsBox: { marginTop:8, border:`1px solid ${THEME.border}`, borderRadius:16, background:'#fff' },
-  resultRow: { display:'flex', gap:10, padding:10, width:'100%', textAlign:'left', borderBottom:`1px solid ${THEME.border}`, background:'#fff', cursor:'pointer' },
+  resultRow: { display:'flex', gap:10, padding:10, width:'100%', textAlign:'left', background:'#fff', cursor:'pointer', color: THEME.text, alignItems:'center', border:0, borderBottom:`1px solid ${THEME.border}`, userSelect:'none' },
+  resultTextCol: { flex:1, minWidth:0 },
+  resultTitle: { fontWeight:700, overflow:'hidden', whiteSpace:'nowrap', textOverflow:'ellipsis' },
+  resultMeta: { fontSize:12, color: THEME.muted, textTransform:'uppercase', overflow:'hidden', whiteSpace:'nowrap', textOverflow:'ellipsis' },
   meta: { fontSize:12, color: THEME.muted, marginTop:6 },
   body: { fontSize:14 },
   cardLg: { background:'#fff', border:`1px solid ${THEME.border}`, borderRadius:20, padding:16 },
-  cardSm: { background:'#fff', border:`1px solid ${THEME.border}`, borderRadius:16, padding:12 },
   providerBox: { border:`1px solid ${THEME.border}`, borderRadius:16, padding:10, background:'#fff' },
-  providerRow: { display:'flex', alignItems:'center', gap:10, padding:'8px 10px', borderRadius:10, background:'#fff', border:`1px solid ${THEME.border}` },
+  providerRow: { display:'flex', alignItems:'center', gap:10, padding:'8px 10px', borderRadius:10, background:'#fff', border:`1px solid ${THEME.border}`, minWidth:0 },
+  providerName: { overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' },
   countryRow: { border:`1px solid ${THEME.border}`, borderRadius:16, padding:12 },
   link: { color: THEME.primary, textDecoration:'underline' },
   footer: { marginTop:24, paddingTop:12, borderTop:`1px solid ${THEME.border}`, textAlign:'center', fontSize:12, color: THEME.muted },
   kpi: { display:'inline-flex', alignItems:'center', gap:6, padding:'6px 10px', borderRadius:999, background:'#F2E8FF', color: THEME.primary, fontWeight:700 },
-  modalBackdrop: { position:'fixed', inset:0, background:'rgba(0,0,0,0.35)', display:'grid', placeItems:'center', zIndex:50 },
+  modalBackdrop: { position:'fixed', inset:0, background:'rgba(0,0,0,0.35)', display:'grid', placeItems:'center', zIndex:50, padding:'16px' },
   modal: { width:'min(720px, 92vw)', background:'#fff', border:`1px solid ${THEME.border}`, borderRadius:20, padding:16, boxShadow:'0 20px 60px rgba(0,0,0,0.25)' },
 };
