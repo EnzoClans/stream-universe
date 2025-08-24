@@ -1,4 +1,4 @@
-import React from 'react';                   // ⬅️ adicionado React aqui
+/** @jsxImportSource react */
 import StreamUniverse from './StreamUniverse';
 
 export default function App() {

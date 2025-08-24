@@ -37,9 +37,6 @@ const REGIONS = [
   { code: "KR", name: "South Korea" }, { code: "IN", name: "India" }, { code: "TR", name: "Türkiye" },
 ];
 
-// Label map (may be useful later)
-const TYPE_LABELS = { flatrate: "Stream", free: "Free", ads: "With Ads", rent: "Rent", buy: "Buy" } as const;
-
 function flagEmoji(cc: string) {
   return cc.toUpperCase().replace(/./g, (c) => String.fromCodePoint(127397 + c.charCodeAt(0)));
 }
